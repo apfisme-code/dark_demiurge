@@ -9,7 +9,7 @@ import {
   BIOMES, ENEMIES, BUILDINGS, BUILDING_MAP, BUILDING_UPGRADE_NEXT,
   TOTAL_POINTS, BASE_RATE, HUMAN_BASE_HP, HUMAN_BASE_DMG,
   PORTAL_MAX_LEVEL, PORTAL_SPAWN_TIME_START, PORTAL_SPAWN_TIME_MIN,
-  BIOME_UNLOCK_LEVEL, RAID_DURATION,
+  BIOME_UNLOCK_LEVEL, RAID_BOSS_DELAY,
 } from './config.js';
 import {
   S, popup, resourceList, toastEl, raidHudEl,
@@ -131,10 +131,10 @@ export function updateRaidHud() {
   raidHudEl.classList.remove('hidden');
   let html = '';
   if (S.raid) {
-    const rem = Math.max(0, RAID_DURATION - S.raid.elapsed);
-    const min = Math.floor(rem / 60);
-    const sec = Math.floor(rem % 60).toString().padStart(2, '0');
-    html += `🔥 НАБЕГ · ${min}:${sec} · спавн ×${S.raidSpawnMult}`;
+    const toBoss = Math.max(0, RAID_BOSS_DELAY - S.raid.elapsed);
+    html += S.boss
+      ? `🔥 НАБЕГ · спавн ×${S.raidSpawnMult}`
+      : `🔥 НАБЕГ · босс через ${toBoss.toFixed(0)} с · спавн ×${S.raidSpawnMult}`;
   } else {
     html += `⚠ Босс на свободе`;
   }
@@ -310,7 +310,7 @@ export function updatePopupLive() {
     const bossAlive = !!S.boss;
     const hasMono = hasMonolithActive();
     if (active) {
-      raidBtn.textContent = `🔥 Набег идёт · ${Math.max(0, RAID_DURATION - S.raid.elapsed).toFixed(0)} с`;
+      raidBtn.textContent = '🔥 Набег идёт';
       raidBtn.disabled = true;
     } else if (bossAlive) {
       raidBtn.textContent = `💀 Босс на свободе!`;
@@ -750,7 +750,7 @@ function renderCellPopup(idx) {
     raidBtn.className = 'action-btn danger-btn';
     raidBtn.id = 'pv-raid';
     raidBtn.disabled = !!S.raid || !!S.boss;
-    if (S.raid) raidBtn.textContent = `🔥 Набег идёт · ${Math.max(0, RAID_DURATION - S.raid.elapsed).toFixed(0)} с`;
+    if (S.raid) raidBtn.textContent = '🔥 Набег идёт';
     else if (S.boss) raidBtn.textContent = `💀 Босс на свободе!`;
     else raidBtn.textContent = `🔥 Начать набег демонов`;
     raidBtn.addEventListener('click', (e) => {
@@ -847,7 +847,7 @@ function renderPortalPopup(idx) {
     raidBtn.className = 'action-btn danger-btn';
     raidBtn.id = 'pv-raid';
     raidBtn.disabled = !!S.raid || !!S.boss;
-    if (S.raid) raidBtn.textContent = `🔥 Набег идёт · ${Math.max(0, RAID_DURATION - S.raid.elapsed).toFixed(0)} с`;
+    if (S.raid) raidBtn.textContent = '🔥 Набег идёт';
     else if (S.boss) raidBtn.textContent = `💀 Босс на свободе!`;
     else raidBtn.textContent = `🔥 Начать набег демонов`;
     raidBtn.addEventListener('click', (e) => {

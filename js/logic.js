@@ -6,7 +6,7 @@
 // ===========================================================================
 import {
   BIOMES, ENEMIES, BUILDING_MAP, BUILDING_UPGRADE_NEXT,
-  RAID_DURATION, RAID_BOSS_DELAY,
+  RAID_BOSS_DELAY,
   BOSS_HP, BOSS_DMG, BOSS_MOVE_DELAY,
   HOME_BIOME_SPAWN_WEIGHT, COMBAT_TICK, HEALER_HEAL_AMOUNT, BATTLE_MERGE_SAFETY,
   MAX_TICK_DT, UI_REFRESH_INTERVAL, POPUP_REFRESH_INTERVAL,
@@ -623,7 +623,7 @@ export function processBattles(dt) {
       if (s.t === 'b') {
         s.timer += dt;
         while (s.timer >= COMBAT_TICK) {
-          s.timer -= 1;
+          s.timer -= COMBAT_TICK;
           s.i.hp -= cellDmg;
           s.h.hp -= ENEMIES[s.i.biomeIdx || 0].dmg;
           let done = false;
@@ -643,7 +643,7 @@ export function processBattles(dt) {
       } else if (s.t === 'bld' && s.battle) {
         s.battle.timer += dt;
         while (s.battle.timer >= COMBAT_TICK) {
-          s.battle.timer -= 1;
+          s.battle.timer -= COMBAT_TICK;
           s.battle.i.hp -= cellDmg;
           s.worker.hp -= ENEMIES[s.battle.i.biomeIdx || 0].dmg;
           let done = false;
@@ -770,7 +770,7 @@ export function processTowersAndHealers(dt) {
       if (b.effect === 'tower') {
         s.timer = (s.timer || 0) + dt;
         while (s.timer >= COMBAT_TICK) {
-          s.timer -= 1;
+          s.timer -= COMBAT_TICK;
           // Priority: S.boss
           if (S.boss && (S.boss.cellIdx === idx || S.neighborLists[idx].includes(S.boss.cellIdx))) {
             S.boss.hp -= b.power;
@@ -825,7 +825,7 @@ export function processTowersAndHealers(dt) {
       } else if (b.effect === 'healer') {
         s.timer = (s.timer || 0) + dt;
         while (s.timer >= COMBAT_TICK) {
-          s.timer -= 1;
+          s.timer -= COMBAT_TICK;
           const area = [idx, ...S.neighborLists[idx]];
           const wounded = [];
           for (const a of area) {
@@ -918,21 +918,14 @@ export function tick() {
       S.spawnTimer = 0;
     }
 
-    // Raid timing. Босс не переживает набег: иначе он навсегда остаётся в
-    // мире, а новый набег становится невозможен (см. startRaid).
+    // Набег. Таймера нет: у набега ровно два исхода — убит босс (победа)
+    // или разрушен монолит (провал и возврат к подготовке). Оба
+    // разруливает processBoss, а не обратный отсчёт.
     if (S.raid) {
       S.raid.elapsed += dt;
       if (!S.raid.bossSpawned && S.raid.elapsed >= RAID_BOSS_DELAY) {
         S.raid.bossSpawned = true;
         spawnRaidBoss();
-      }
-      if (S.raid.elapsed >= RAID_DURATION) {
-        if (S.boss) {
-          endRaidAsFailed('💀 Босс не убит — набег окончен, монолит уцелел.');
-        } else {
-          S.raid = null;
-          showToast('Набег демонов завершён', 2000);
-        }
       }
     }
 

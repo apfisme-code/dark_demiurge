@@ -21,8 +21,7 @@ import {
   PORTAL_BASE_CAPACITY, PORTAL_MAX_LEVEL,
   PORTAL_UPGRADE_BASE_COST, PORTAL_UPGRADE_GROWTH,
   PORTAL_SPAWN_TIME_START, PORTAL_SPAWN_TIME_MIN,
-  IMP_BASE_PERIOD, IMP_MAX_PERIOD, BIOME_UNLOCK_LEVEL, RAID_DURATION,
-  RAID_SPAWN_MULT,
+  IMP_BASE_PERIOD, IMP_MAX_PERIOD, BIOME_UNLOCK_LEVEL, RAID_SPAWN_MULT,
 } from './config.js';
 import { clampCam, generateWorld } from './world.js';
 import { resetGameState } from './main.js';
@@ -312,8 +311,9 @@ export function getImpPeriod(idx) {
   return Math.min(IMP_MAX_PERIOD, IMP_BASE_PERIOD / vf);
 }
 
+/** Набег активен, пока он не закончился. Таймера у набега нет. */
 export function isRaidActive() {
-  return S.raid !== null && S.raid.elapsed < RAID_DURATION;
+  return S.raid !== null;
 }
 
 // ============ БАФФЫ ============

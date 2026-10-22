@@ -6,12 +6,14 @@
 // ===========================================================================
 import * as CONFIG from './config.js';
 import {
-  BIOMES, HUMAN_BASE_HP, TICK_INTERVAL_MS, RENDER_MAX_DT, CAMERA_SPEED,
+  BIOMES, HUMAN_BASE_HP, PORTAL_BASE_CAPACITY,
+  TICK_INTERVAL_MS, RENDER_MAX_DT, CAMERA_SPEED,
 } from './config.js';
 import {
   S, canvas, popup, undoToast, undoBtn, toastEl, winScreen, raidHudEl,
   recomputeCap, isBiomeUnlocked, recomputeBuffs, recomputeRates, getPoolPeople,
-  getReservedArr, getPortalCap, recomputeClaimableSet, doResetWithUndo,
+  getReservedArr, getPortalCap, getCellCap, recomputeClaimableSet,
+  doResetWithUndo,
   undoReset, hideUndoToast,
 } from './state.js';
 import { setup, clampCam, generateWorld, recomputeAllCaches } from './world.js';
@@ -65,18 +67,26 @@ export function resetGameState() {
   S.claimed.set(S.portalCellIdx, S.portalBiomeIdx);
   S.biomeCounts[S.portalBiomeIdx] = 1;
 
-  S.cellSlots.set(S.portalCellIdx, [
-    { t: 'portal' },
-    null, null, null, null
-  ]);
-  S.cellSlotReserved.set(S.portalCellIdx, [false, false, false, false, false]);
+  // Первый слот — сам портал, остальные — обычные. Размер задаёт
+  // PORTAL_BASE_CAPACITY, иначе смена константы развалит состояние.
+  const portalSlots = new Array(PORTAL_BASE_CAPACITY).fill(null);
+  portalSlots[0] = { t: 'portal' };
+  S.cellSlots.set(S.portalCellIdx, portalSlots);
+  S.cellSlotReserved.set(S.portalCellIdx, new Array(PORTAL_BASE_CAPACITY).fill(false));
   S.cellImpTimers.set(S.portalCellIdx, 0);
 
-  S.totalPeople = 2;
+  S.totalPeople = 1;
   const pslots = S.cellSlots.get(S.portalCellIdx);
   const pres = S.cellSlotReserved.get(S.portalCellIdx);
-  pslots[1] = { t: 'h', hp: HUMAN_BASE_HP, maxHp: HUMAN_BASE_HP };
-  pres[1] = true;
+  // Первый рабочий — в первый же свободный слот после портала. Индекс 1
+  // тоже хардкодить нельзя: при PORTAL_BASE_CAPACITY = 1 места нет вовсе.
+  const firstFree = pslots.findIndex((s, i) => i > 0 && s === null);
+  if (firstFree !== -1) {
+    pslots[firstFree] = { t: 'h', hp: HUMAN_BASE_HP, maxHp: HUMAN_BASE_HP };
+    pres[firstFree] = true;
+  } else {
+    S.totalPeople = 0;
+  }
 
   recomputeAllCaches();
   recomputeClaimableSet();
@@ -341,6 +351,25 @@ export function renderLoop() {
 // Ни одна из команд не пишет в localStorage и не влияет на другие вкладки.
 // ===========================================================================
 
+/**
+ * Сколько крови стоит захват следующих n клеток — та же формула, что и в
+ * getClaimCost, поэтому не разъезжается с балансом при правке коэффициента.
+ * Берём среднюю базу по уже захваченным клеткам и добавляем запас 15%.
+ */
+function estimateClaimCost(cells) {
+  let caps = 0;
+  for (const idx of S.claimed.keys()) caps += getCellCap(idx);
+  const avgCap = S.claimed.size ? caps / S.claimed.size : 1;
+  const base = Math.max(CONFIG.CLAIM_BASE_MIN,
+    Math.min(CONFIG.CLAIM_BASE_MAX, Math.ceil(avgCap / CONFIG.CLAIM_CAP_DIVISOR)));
+  let total = 0;
+  for (let k = 0; k < cells; k++) {
+    const n = S.claimed.size + k - 1;
+    total += base * (1 + n * n * CONFIG.CLAIM_BASE_FACTOR);
+  }
+  return Math.ceil(total * 1.15);
+}
+
 /** Захватить n клеток случайным доступным биомом. Возвращает, сколько вышло. */
 function debugClaimCells(n) {
   const unlocked = BIOMES.map((_, i) => i).filter(isBiomeUnlocked);
@@ -467,12 +496,15 @@ window.CE = {
     parts.push(CE.cap(120));
     parts.push(CE.people(80));
     parts.push(CE.res(5000));
-    // Крови нужно с запасом: цена захвата растёт квадратично и к 150-й клетке
-    // стоит уже тысячи за клетку.
-    parts.push(CE.blood(cells * 2000));
+    // Кровь считаем по формуле захвата, а не «на глаз»: при 150 клетках
+    // это сотни тысяч, и фиксированного запаса не хватало — захват обрывался.
+    const need = estimateClaimCost(cells);
+    parts.push(CE.blood(need));
     parts.push(CE.claim(cells));
     parts.push(CE.monolith());
-    parts.push(`клеток: ${S.claimed.size}, людей: ${S.totalPeople}, кровь: ${Math.round(S.chaosBlood)}`);
+    const got = S.claimed.size;
+    parts.push(`клеток: ${got}${got < cells ? ` (из ${cells}, не хватило крови)` : ''}` +
+      `, людей: ${S.totalPeople}, кровь: ${Math.round(S.chaosBlood)}`);
     return parts.join(' | ');
   },
 
