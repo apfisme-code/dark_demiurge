@@ -50,9 +50,10 @@ export function claimCell(idx, biomeIdx) {
 export function assignTo(idx, delta) {
   const slots = S.cellSlots.get(idx);
   if (!slots) return;
+  const maxHp = getCellMaxHp(idx);
 
   if (delta > 0) {
-    if (getPoolPeople() <= 0) return;
+    if (getPoolPeople() <= 0) { showToast('Нет свободных рабочих — расширь лимит (дома) или подожди'); return; }
     const reserved = getReservedArr(idx);
     let converted = 0;
     for (let i = 0; i < slots.length; i++) {
@@ -61,7 +62,7 @@ export function assignTo(idx, delta) {
       if (!e || e.t !== 'i') continue;
       slots[i] = {
         t: 'b',
-        h: { hp: getCellMaxHp(idx), maxHp: getCellMaxHp(idx) },
+        h: { hp: maxHp, maxHp: maxHp },
         i: { hp: e.hp, maxHp: e.maxHp, biomeIdx: e.biomeIdx },
         timer: 0
       };
@@ -75,23 +76,45 @@ export function assignTo(idx, delta) {
       updateResourceUI();
       return;
     }
+
+    // Пустой слот — рабочий встаёт на добычу.
     let emptyIdx = -1;
     for (let i = 0; i < slots.length; i++) {
       if (slots[i] === null) { emptyIdx = i; break; }
     }
-    if (emptyIdx === -1) return;
-    slots[emptyIdx] = { t: 'h', hp: getCellMaxHp(idx), maxHp: getCellMaxHp(idx) };
-    if (reserved) reserved[emptyIdx] = true;
+    if (emptyIdx !== -1) {
+      slots[emptyIdx] = { t: 'h', hp: maxHp, maxHp: maxHp };
+      if (reserved) reserved[emptyIdx] = true;
+    } else {
+      // Все слоты заняты — отдаём рабочего зданию, которому он нужен.
+      // Без этого переселить людей вглубь некуда: занятые слоты закрыты.
+      let bldIdx = -1;
+      for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
+        if (s && s.t === 'bld' && !s.worker) {
+          const b = BUILDING_MAP[s.id];
+          if (b && !b.noWorker) { bldIdx = i; break; }
+        }
+      }
+      if (bldIdx === -1) { showToast('Все слоты заняты — здесь некуда поставить рабочего'); return; }
+      slots[bldIdx].worker = { hp: maxHp, maxHp: maxHp };
+      if (reserved) reserved[bldIdx] = true;
+    }
     recomputeRates();
     updateHUD();
     updateResourceUI();
   } else {
+    // Снимаем рабочего и с добычи, и из постройки — иначе люди, ушедшие
+    // в башни, намертво в них застревают и их нельзя переселить.
     let humanIdx = -1;
     for (let i = slots.length - 1; i >= 0; i--) {
-      if (slots[i] && slots[i].t === 'h') { humanIdx = i; break; }
+      const s = slots[i];
+      if (!s) continue;
+      if (s.t === 'h' || (s.t === 'bld' && s.worker)) { humanIdx = i; break; }
     }
-    if (humanIdx === -1) return;
-    slots[humanIdx] = null;
+    if (humanIdx === -1) { showToast('Здесь нет рабочего'); return; }
+    if (slots[humanIdx].t === 'bld') slots[humanIdx].worker = null;
+    else slots[humanIdx] = null;
     const reserved = getReservedArr(idx);
     if (reserved) reserved[humanIdx] = false;
     recomputeRates();
@@ -136,15 +159,23 @@ export function placeBuilding(idx, buildingId) {
   }
 
   payForBuilding(b);
+  // Если постройка встала на пустой слот, а в пуле есть свободный рабочий —
+  // отдаём его сразу. Иначе башня простоит без рабочего, и заселить её
+  // будет нечем: «+» в попапе умеет брать только пустой слот.
+  let worker = absorbedWorker;
+  if (!worker && !b.noWorker && getPoolPeople() > 0) {
+    worker = { hp: getCellMaxHp(idx), maxHp: getCellMaxHp(idx) };
+  }
   slots[targetIdx] = {
     t: 'bld',
     id: buildingId,
-    worker: (b.noWorker ? null : absorbedWorker),
+    worker: b.noWorker ? null : worker,
     battle: null,
     timer: 0
   };
   const reserved = getReservedArr(idx);
-  if (reserved && (!absorbedWorker || b.noWorker)) reserved[targetIdx] = false;
+  // Резерв держит слот заполненным: если рабочий погибнет, пул вернёт нового.
+  if (reserved) reserved[targetIdx] = b.noWorker ? false : !!worker;
 
   recomputeBuffs();
   recomputeCap();
@@ -281,13 +312,17 @@ export function trySpawnEnemyOnCell(sourceIdx) {
   if (!isCellFullyOccupiedByEnemies(sourceIdx)) {
     return placeEnemyOnCell(sourceIdx, enemyBiome);
   }
+  // Пограничная клетка забита — «проталкиваем» врага глубже, в ближайшую
+  // клетку, где есть место. Идти можно по любой захваченной клетке:
+  // раньше поиск пропускал всё, что не касается пустоты (getImpPeriod = ∞),
+  // и враг расползался только по внешнему кольцу, а внутрь не проникал
+  // никогда — тыл оставался неприступным даже при полном прорыве фронта.
   const visited = new Set([sourceIdx]);
   const queue = [sourceIdx];
   while (queue.length > 0) {
     const cur = queue.shift();
     for (const n of S.neighborLists[cur]) {
       if (visited.has(n) || !S.claimed.has(n)) continue;
-      if (getImpPeriod(n) === Infinity) continue;
       visited.add(n);
       if (!isCellFullyOccupiedByEnemies(n)) {
         return placeEnemyOnCell(n, enemyBiome);

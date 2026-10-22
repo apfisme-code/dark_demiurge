@@ -24,7 +24,9 @@ import { previewSynergy } from './world.js';
 import {
   claimCell, assignTo, placeBuilding, destroyBuilding, upgradeBuilding,
   upgradePortal, hasMonolithActive, startRaid,
-} from './logic.js';export function updateHUD() {
+} from './logic.js';
+
+export function updateHUD() {
   const stats = countSlots();
   document.getElementById('chaosHud').textContent = formatNumber(S.chaosBlood);
   document.getElementById('peopleHud').textContent = `${stats.humans} / ${getPortalCap()}`;
@@ -434,14 +436,25 @@ function buildAssignControls(idx) {
   const pool = getPoolPeople();
 
   let canAdd = false;
+  let addsToBuilding = false;
   if (slots && pool > 0) {
+    let hasEmpty = false;
     for (const s of slots) {
-      if (s === null || (s && s.t === 'i')) { canAdd = true; break; }
+      if (s === null || (s && s.t === 'i')) { canAdd = true; if (s === null) hasEmpty = true; }
+      // Если пустых слотов нет, рабочего можно отдать зданию без рабочего.
+      if (!s) continue;
+      if (s.t === 'bld' && !s.worker) {
+        const b = BUILDING_MAP[s.id];
+        if (b && !b.noWorker) canAdd = true;
+      }
     }
+    addsToBuilding = canAdd && !hasEmpty;
   }
   let canRemove = false;
   if (slots) {
-    for (const s of slots) if (s && s.t === 'h') { canRemove = true; break; }
+    for (const s of slots) {
+      if (s && (s.t === 'h' || (s.t === 'bld' && s.worker))) { canRemove = true; break; }
+    }
   }
 
   const controls = document.createElement('div');
@@ -472,9 +485,13 @@ function buildAssignControls(idx) {
   plus.id = 'pv-plus';
   plus.textContent = '+';
   plus.disabled = !canAdd;
-  plus.title = enemies > 0
-    ? `Отправить в бой ${Math.min(enemies, pool)} из ${enemies} врагов`
-    : 'Назначить на добычу';
+  plus.title = pool <= 0
+    ? 'Нет свободных рабочих'
+    : enemies > 0
+      ? `Отправить в бой ${Math.min(enemies, pool)} из ${enemies} врагов`
+      : addsToBuilding
+        ? 'Отдать рабочего зданию без рабочего'
+        : 'Назначить на добычу';
   plus.addEventListener('click', (e) => {
     e.stopPropagation();
     assignTo(idx, +1);
