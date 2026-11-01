@@ -13,7 +13,7 @@ import {
   S, canvas, popup, undoToast, undoBtn, toastEl, winScreen, raidHudEl,
   recomputeCap, isBiomeUnlocked, recomputeBuffs, recomputeRates, getPoolPeople,
   getReservedArr, getPortalCap, getCellCap, recomputeClaimableSet,
-  doResetWithUndo,
+  doResetWithUndo, getImpPeriod,
   undoReset, hideUndoToast,
 } from './state.js';
 import { setup, clampCam, generateWorld, recomputeAllCaches } from './world.js';
@@ -21,6 +21,7 @@ import { draw } from './render.js';
 import {
   updateHUD, updateResourceUI, updateRaidHud, renderResourceRows,
   hideMainToast, renderPopup, hidePopup, renderLegend,
+  setSpeed, togglePause, updateSpeedUI,
 } from './ui.js';
 import {
   claimCell, startRaid, spawnRaidBoss, triggerVictory, findMonolith, tick,
@@ -59,6 +60,14 @@ export function resetGameState() {
   S.gameWon = false;
   S.raid = null;
   S.boss = null;
+  // Множители спавна — регуляторы подбора сложности, а не игровое состояние:
+  // новая партия должна начинаться с задуманного темпа, иначе подбор значения
+  // в консоли тихо переносится на следующую игру.
+  S.spawnMult = 1;
+  S.raidSpawnMult = CONFIG.RAID_SPAWN_MULT;
+  // Новая партия стартует на бегу: пауза могла остаться от прошлой игры.
+  // Скорость — настройка игрока, её сохраняем.
+  S.paused = false;
   winScreen.classList.remove('show');
   raidHudEl.classList.add('hidden');
   hidePopup();
@@ -102,6 +111,7 @@ export function resetGameState() {
   updateHUD();
   updateResourceUI();
   renderLegend();
+  updateSpeedUI();
 
   if (S.economyTimer) clearInterval(S.economyTimer);
   S.lastTick = performance.now();
@@ -271,6 +281,21 @@ document.addEventListener('keydown', (e) => {
       return;
     }
   }
+  // Пробел — пауза (работает всегда, попап пробел не занимает).
+  // Цифры 1–3 — скорость, но только когда попап закрыт: в открытом попапе
+  // цифры выбирают биом, и это обработано выше.
+  if ((k === ' ' || e.code === 'Space') && !e.repeat) {
+    e.preventDefault();
+    togglePause();
+    return;
+  }
+  if (popup.classList.contains('hidden')) {
+    const speedNum = parseInt(e.key, 10);
+    if (!isNaN(speedNum) && speedNum >= 1 && speedNum <= 3) {
+      setSpeed(speedNum);
+      return;
+    }
+  }
   if (k === 'arrowleft' || k === 'a' || k === 'ф') S.keysPressed.add('left');
   else if (k === 'arrowright' || k === 'd' || k === 'в') S.keysPressed.add('right');
   else if (k === 'arrowup' || k === 'w' || k === 'ц') S.keysPressed.add('up');
@@ -299,6 +324,12 @@ function requestNewMap() {
 document.getElementById('reset').addEventListener('click', requestNewMap);
 // Экран победы перекрывает HUD, поэтому нужен свой выход.
 document.getElementById('winReset').addEventListener('click', requestNewMap);
+
+// ============ ТЕМП СИМУЛЯЦИИ ============
+document.getElementById('btnPause').addEventListener('click', () => togglePause());
+for (const opt of CONFIG.SPEED_OPTIONS) {
+  document.getElementById('btnSpeed' + opt).addEventListener('click', () => setSpeed(opt));
+}
 
 undoBtn.addEventListener('click', () => undoReset());
 
@@ -345,6 +376,8 @@ export function renderLoop() {
 //   CE.raid()       начать набег
 //   CE.raidMult(20) изменить множитель спавна во время набега
 //   CE.win()        немедленная победа
+//   CE.pause()     пауза симуляции (CE.pause(true|false) — задать состояние)
+//   CE.speed(n)    скорость симуляции: 1, 2 или 3
 //   CE.state()      сводка текущего состояния
 //   CE.CONFIG       все игровые константы (см. js/config.js)
 //
@@ -368,6 +401,64 @@ function estimateClaimCost(cells) {
     total += base * (1 + n * n * CONFIG.CLAIM_BASE_FACTOR);
   }
   return Math.ceil(total * 1.15);
+}
+
+/**
+ * Лестница множителей спавна для CE.spawn('+') / CE.spawn('-').
+ * Неравномерная: вниз шаг мелкий (0.5, 0.25), вверх крупный (×2, ×3, ×5) —
+ * в зоне интереса для набега разница обычно идёт в разы, а не в проценты.
+ */
+const SPAWN_LADDER = [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 5, 8, 12, 20];
+
+/** Следующий множитель по лестнице в сторону dir (+1 быстрее, -1 медленнее). */
+function stepLadder(dir) {
+  const cur = S.spawnMult;
+  if (dir > 0) {
+    for (const v of SPAWN_LADDER) if (v > cur * 1.001) return v;
+    return SPAWN_LADDER[SPAWN_LADDER.length - 1];
+  }
+  for (let i = SPAWN_LADDER.length - 1; i >= 0; i--) {
+    if (SPAWN_LADDER[i] < cur * 0.999) return SPAWN_LADDER[i];
+  }
+  return SPAWN_LADDER[0];
+}
+
+/**
+ * Диапазон реального периода спавна по захваченным клеткам с границей.
+ * `raidMult` можно задать явно, чтобы посмотреть, каким будет темп на набеге,
+ * не начиная его. Это и есть ответ, по которому множитель и подбирается.
+ */
+function spawnRange(raidMult) {
+  const m = S.spawnMult * (raidMult === undefined
+    ? (S.raid !== null ? S.raidSpawnMult : 1)
+    : raidMult);
+  let min = Infinity, max = 0, n = 0;
+  for (const idx of S.claimed.keys()) {
+    const p = getImpPeriod(idx);
+    if (p === Infinity) continue;
+    if (p < min) min = p;
+    if (p > max) max = p;
+    n++;
+  }
+  if (!n) return null;
+  return { min: min / m, max: max / m, cells: n };
+}
+
+const fmtRange = r => r ? `${r.min.toFixed(1)}–${r.max.toFixed(1)} с` : 'нет захваченных клеток с границей';
+
+/** Ответ CE.spawn / CE.raidMult: чем именно это обернётся в секундах. */
+function spawnReport() {
+  const parts = [`спавн ×${S.spawnMult}`];
+  const idle = spawnRange(1);
+  if (idle) {
+    parts.push(`вне набега ${fmtRange(idle)}`);
+    if (S.raid) {
+      parts.push(`в набеге ${fmtRange(spawnRange())} (набег ×${S.raidSpawnMult})`);
+    } else {
+      parts.push(`в набеге ${fmtRange(spawnRange(CONFIG.RAID_SPAWN_MULT))} при ×${CONFIG.RAID_SPAWN_MULT}`);
+    }
+  }
+  return parts.join(' · ');
 }
 
 /** Захватить n клеток случайным доступным биомом. Возвращает, сколько вышло. */
@@ -522,15 +613,61 @@ window.CE = {
 
   /** Множитель спавна врагов во время набега — для проверки сложности. */
   raidMult(n = CONFIG.RAID_SPAWN_MULT) {
-    S.raidSpawnMult = Math.max(1, n);
+    // Нижняя граница не 1, а 0.1: набег должен уметь быть и спокойнее
+    // обычного темпа. Через CE.spawn это и так делается, но и здесь
+    // запрещать значение меньше единицы незачем.
+    S.raidSpawnMult = Math.max(0.1, n);
     updateRaidHud();
-    return `спавн во время набега: x${S.raidSpawnMult}`;
+    return spawnReport();
+  },
+
+  /**
+   * Скорость спавна. Действует всегда — и вне набега, и во время.
+   *   CE.spawn()      — вернуть задуманный темп (×1)
+   *   CE.spawn(3)     — втрое чаще
+   *   CE.spawn(0.5)   — вдвое реже
+   *   CE.spawn('+')   — шаг вверх по лестнице, CE.spawn('-') — шаг вниз
+   * Множится с raidMult: итог всегда виден в ответе.
+   */
+  spawn(arg) {
+    let n;
+    if (arg === undefined || arg === null) {
+      n = 1;
+    } else if (typeof arg === 'string') {
+      const k = arg.trim().toLowerCase();
+      if (k === '+' || k === 'up' || k === 'быстрее') n = stepLadder(1);
+      else if (k === '-' || k === 'down' || k === 'медленнее') n = stepLadder(-1);
+      else n = parseFloat(k);
+      if (Number.isNaN(n)) return 'не понял аргумент: нужен множитель, либо "+" / "-"';
+    } else {
+      n = arg;
+    }
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+      return `множитель должен быть числом больше нуля (получено ${arg})`;
+    }
+    S.spawnMult = n;
+    updateRaidHud();
+    return spawnReport();
   },
 
   /** Немедленная победа. */
   win() {
     triggerVictory();
     return 'победа';
+  },
+
+  /** Пауза. CE.pause() — переключить, CE.pause(true) — включить. */
+  pause(on) {
+    if (on === undefined) togglePause();
+    else if (on) { if (!S.paused) togglePause(); }
+    else if (S.paused) togglePause();
+    return S.paused ? 'пауза' : 'идёт';
+  },
+
+  /** Скорость симуляции: CE.speed(2) — вдвое быстрее, CE.speed() — ×1. */
+  speed(n = 1) {
+    const speed = setSpeed(n);
+    return `скорость ×${speed}${S.paused ? ' (на паузе)' : ''}`;
   },
 
   /** Сводка состояния. */

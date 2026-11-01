@@ -37,9 +37,34 @@
   button.hud-btn {
     background: #1e1e2e; color: #ddd; border: 1px solid #3a3a5a;
     padding: 6px 14px; border-radius: 5px; cursor: pointer;
-    font-size: 12px; margin-left: auto; letter-spacing: 0.5px;
+    font-size: 12px; letter-spacing: 0.5px;
   }
   button.hud-btn:hover { background: #2a2a4a; border-color: #5a5a8a; color: #fff; }
+  /* Группа управления темпом прижата вправо, «Новая карта» идёт следом. */
+  #speedControls { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  #speedControls button.hud-btn { padding: 6px 10px; font-weight: 700; }
+  /* Ширину кнопки паузы фиксируем: подпись меняется с «Пауза» на
+     «Продолжить», и шапка не должна прыгать при переключении. */
+  #btnPause { min-width: 104px; }
+  #speedControls button.hud-btn.active {
+    background: #3a2560; border-color: #8a5ac0; color: #fff;
+  }
+  #pauseOverlay {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(5,5,12,0.55);
+    z-index: 400; pointer-events: none;
+  }
+  #pauseOverlay.show { display: flex; }
+  .pause-card {
+    text-align: center; color: #fff; letter-spacing: 3px;
+    font-size: 34px; font-weight: 800;
+    text-shadow: 0 4px 24px rgba(0,0,0,0.9);
+  }
+  .pause-card span {
+    display: block; margin-top: 8px;
+    font-size: 12px; font-weight: 400; letter-spacing: 1px; color: #aaa;
+  }
   canvas { display: block; touch-action: none; }
 
   #popup {
@@ -295,7 +320,7 @@
 <div id="loadError">
   <div>
     <h1>Не удалось загрузить d3-delaunay</h1>
-    <p>Проверьте подключение к интернету и перезагрузите страницу.</p>
+    <p>Файл <code>vendor/d3-delaunay.min.js</code> не найден или повреждён.</p>
   </div>
 </div>
 
@@ -308,12 +333,22 @@
   <div class="hud-stat">Клетки<b id="cellsHud">1 / 300</b></div>
   <div class="hud-stat">Портал<b id="portalHud">Ур. 1</b></div>
   <div class="hud-stat gain">Прирост<b id="gainHud" style="color:#8ac88a">+0.0/с</b></div>
+  <div id="speedControls">
+    <button class="hud-btn" id="btnPause" title="Пауза (пробел)">Пауза</button>
+    <button class="hud-btn active" id="btnSpeed1" title="Обычная скорость (1)">×1</button>
+    <button class="hud-btn" id="btnSpeed2" title="Ускорение (2)">×2</button>
+    <button class="hud-btn" id="btnSpeed3" title="Ускорение (3)">×3</button>
+  </div>
   <button class="hud-btn" id="reset">↺ Новая карта</button>
 </div>
 
 <canvas id="canvas"></canvas>
 
 <div id="raidHud" class="hidden"></div>
+
+<div id="pauseOverlay">
+  <div class="pause-card">ПАУЗА<span>пробел — продолжить</span></div>
+</div>
 
 <div id="resources">
   <div class="rp-title">Ресурсы</div>
@@ -341,7 +376,10 @@
 <div id="panHint">Перетаскивай мышью или <b>WASD / стрелки</b> · колесо — вертикально</div>
 <div id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
+<!-- Диаграмма Вороного лежит рядом с игрой: без интернета игра тоже должна
+     работать. Раньше библиотека тянулась с CDN и при недоступности сети
+     страница просто не стартовала. -->
+<script src="vendor/d3-delaunay.min.js"></script>
 <script type="module" src="js/main.js"></script>
 <noscript>
   <div class="hint">Для запуска нужен JavaScript. Открывай через локальный сервер:

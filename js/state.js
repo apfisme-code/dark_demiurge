@@ -103,11 +103,24 @@ export const S = {
   raid: null,
   /** Множитель спавна врагов во время набега. Подавляется отладкой (CE.raidMult). */
   raidSpawnMult: RAID_SPAWN_MULT,
+  /**
+   * Общий множитель скорости спавна: 1 — как задумано, 2 — вдвое чаще,
+   * 0.5 — вдвое реже. Действует всегда, и вне набега, и во время, и
+   * перемножается с raidSpawnMult. Меняется из консоли (CE.spawn).
+   */
+  spawnMult: 1,
   /** Босс: { cellIdx, hp, maxHp, dmg, moveTimer, atkTimer }. null — босса нет. */
   boss: null,
 
   // --- 5. UI и ввод ------------------------------------------------------
   hoveredIndex: -1,
+  /**
+   * Скорость симуляции: 1, 2 или 3. Мир считает быстрее, но интерфейс
+   * и камера работают как обычно.
+   */
+  speed: 1,
+  /** Пауза: мир замер, камера и интерфейс — живут. */
+  paused: false,
   /** Клетка, открытая в попапе. */
   pendingIdx: null,
   /** Попап сейчас в режиме выбора постройки. */
@@ -309,6 +322,25 @@ export function getImpPeriod(idx) {
   const vf = S.cellVoidFraction[idx] || 0;
   if (vf <= 0) return Infinity;
   return Math.min(IMP_MAX_PERIOD, IMP_BASE_PERIOD / vf);
+}
+
+/**
+ * Период спавна с учётом обоих множителей — тот, что реально работает.
+ * Тик, отрисовка пульса и надпись «нападение через» обязаны брать его отсюда:
+ * набег ускоряет спавн в RAID_SPAWN_MULT раз, и если считать период по
+ * getImpPeriod, то во время набега счётчик показывал бы время в 10 раз
+ * больше настоящего. При подборе множителя такой враньё особенно мешает.
+ */
+export function getEffectiveImpPeriod(idx) {
+  const base = getImpPeriod(idx);
+  if (base === Infinity) return Infinity;
+  return base / getSpawnMult();
+}
+
+/** Итоговый множитель спавна: общий dial × множитель набега. */
+export function getSpawnMult() {
+  const raid = S.raid !== null ? S.raidSpawnMult : 1;
+  return S.spawnMult * raid;
 }
 
 /** Набег активен, пока он не закончился. Таймера у набега нет. */

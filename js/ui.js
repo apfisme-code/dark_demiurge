@@ -9,14 +9,14 @@ import {
   BIOMES, ENEMIES, BUILDINGS, BUILDING_MAP, BUILDING_UPGRADE_NEXT,
   TOTAL_POINTS, BASE_RATE, HUMAN_BASE_HP, HUMAN_BASE_DMG,
   PORTAL_MAX_LEVEL, PORTAL_SPAWN_TIME_START, PORTAL_SPAWN_TIME_MIN,
-  BIOME_UNLOCK_LEVEL, RAID_BOSS_DELAY,
+  BIOME_UNLOCK_LEVEL, RAID_BOSS_DELAY, SPEED_OPTIONS,
 } from './config.js';
 import {
   S, popup, resourceList, toastEl, raidHudEl,
   getSpawnTime, getPortalCap, countSlots, getPoolPeople, getPeopleOn,
   getWorkingOn, getWorkingOnBuildings, getCellHpSum, getEnemiesOn,
   getReservedArr, getCellCap, getClaimCost, isBiomeUnlocked,
-  getBiomeUnlockLevel, getPortalUpgradeCost, canUpgradePortal, getImpPeriod,
+  getBiomeUnlockLevel, getPortalUpgradeCost, canUpgradePortal, getEffectiveImpPeriod,
   recomputeBuffs, getCellMaxHp, getCellProdMult, recomputeRates,
   canAffordBuilding,
 } from './state.js';
@@ -39,6 +39,44 @@ export function updateHUD() {
     resRate += S.cachedBiomeRates[i] - S.cachedConsumption[i];
   }
   document.getElementById('gainHud').textContent = `${resRate >= 0 ? '+' : ''}${resRate.toFixed(1)}/с`;
+}
+
+// ============ ТЕМП СИМУЛЯЦИИ ============
+/**
+ * Скорость симуляции: 1, 2 или 3. Мир считает быстрее, интерфейс и камера
+ * — как обычно. Множитель применяется к шагу tick(), поэтому ускоряется
+ * ровно всё: экономика, спавн, бой и босс.
+ */
+export function setSpeed(n) {
+  const speed = SPEED_OPTIONS.includes(n) ? n : 1;
+  S.speed = speed;
+  updateSpeedUI();
+  return speed;
+}
+
+/** Пауза. Мир замер, но камера, попапы и кнопки работают. */
+export function togglePause() {
+  S.paused = !S.paused;
+  updateSpeedUI();
+  return S.paused;
+}
+
+/** Подсветка активной скорости и надпись «пауза». */
+export function updateSpeedUI() {
+  for (const opt of SPEED_OPTIONS) {
+    const btn = document.getElementById('btnSpeed' + opt);
+    if (btn) btn.classList.toggle('active', S.speed === opt);
+  }
+  const pauseBtn = document.getElementById('btnPause');
+  if (pauseBtn) {
+    // Подпись текстом, а не значком: символ паузы в системных шрифтах
+    // рисуется двумя тонкими полосками и читается плохо.
+    pauseBtn.textContent = S.paused ? 'Продолжить' : 'Пауза';
+    pauseBtn.classList.toggle('active', S.paused);
+    pauseBtn.title = S.paused ? 'Продолжить (пробел)' : 'Пауза (пробел)';
+  }
+  const overlay = document.getElementById('pauseOverlay');
+  if (overlay) overlay.classList.toggle('show', S.paused);
 }
 
 // ============ RESOURCE PANEL ============
@@ -232,7 +270,7 @@ export function updatePopupLive() {
 
   const elThreat = document.getElementById('pv-threat');
   if (elThreat) {
-    const period = getImpPeriod(idx);
+    const period = getEffectiveImpPeriod(idx);
     if (period < Infinity) {
       const elapsed = S.cellImpTimers.get(idx) || 0;
       const remaining = Math.max(0, period - elapsed);
@@ -505,7 +543,7 @@ function buildAssignControls(idx) {
 
 function buildThreatRows(idx) {
   const vf = S.cellVoidFraction[idx] || 0;
-  const period = getImpPeriod(idx);
+  const period = getEffectiveImpPeriod(idx);
   if (period === Infinity) return '';
 
   const elapsed = S.cellImpTimers.get(idx) || 0;

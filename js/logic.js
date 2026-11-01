@@ -15,7 +15,7 @@ import {
   S, popup, winScreen,
   getSpawnTime, recomputeCap, getPortalCap, getPoolPeople, updateBattleFlag,
   getReservedArr, getClaimCost, isBiomeUnlocked, getPortalUpgradeCost,
-  canUpgradePortal, getImpPeriod, isRaidActive, recomputeBuffs, getCellMaxHp,
+  canUpgradePortal, getEffectiveImpPeriod, recomputeBuffs, getCellMaxHp,
   getCellDmg, recomputeRates, recomputeClaimableSet, canAffordBuilding,
   payForBuilding,
 } from './state.js';
@@ -91,7 +91,9 @@ export function assignTo(idx, delta) {
       let bldIdx = -1;
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
-        if (s && s.t === 'bld' && !s.worker) {
+        // Здание в бою пропускаем: подсаженный рабочий пришёл бы с полным
+        // HP и бесплатно вылечил бы бой.
+        if (s && s.t === 'bld' && !s.worker && !s.battle) {
           const b = BUILDING_MAP[s.id];
           if (b && !b.noWorker) { bldIdx = i; break; }
         }
@@ -106,13 +108,24 @@ export function assignTo(idx, delta) {
   } else {
     // Снимаем рабочего и с добычи, и из постройки — иначе люди, ушедшие
     // в башни, намертво в них застревают и их нельзя переселить.
+    //
+    // Из здания в бою рабочего забирать нельзя: слот остался бы с боем
+    // и без рабочего, а на это падает отрисовка (рисуется полоска HP
+    // рабочего). Сначала ищем кого-то свободного, и только если таких
+    // нет — честно отказываем.
     let humanIdx = -1;
+    let inBattle = false;
     for (let i = slots.length - 1; i >= 0; i--) {
       const s = slots[i];
       if (!s) continue;
-      if (s.t === 'h' || (s.t === 'bld' && s.worker)) { humanIdx = i; break; }
+      if (s.t === 'h') { humanIdx = i; break; }
+      if (s.t === 'bld' && s.worker && !s.battle) { humanIdx = i; break; }
+      if (s.t === 'bld' && s.worker && s.battle) inBattle = true;
     }
-    if (humanIdx === -1) { showToast('Здесь нет рабочего'); return; }
+    if (humanIdx === -1) {
+      showToast(inBattle ? 'Рабочие в бою — их нельзя забрать' : 'Здесь нет рабочего');
+      return;
+    }
     if (slots[humanIdx].t === 'bld') slots[humanIdx].worker = null;
     else slots[humanIdx] = null;
     const reserved = getReservedArr(idx);
@@ -431,12 +444,18 @@ export function getBossTargetIdx() {
 
 /**
  * Завершает набег провалом: босс уходит, набег снимается, мир живёт дальше.
- * Вызывается и при сносе монолита боссом, и при истечении таймера набега —
- * босс никогда не должен оставаться в мире без набега.
+ * Единственная точка, которая снимает набег без победы, — вызывается при
+ * разрушении монолита (боссом, врагами или игроком) и при потере клетки босса.
+ * Босс никогда не должен оставаться в мире без набега, а набег без босса
+ * и без монолита — висеть вечно, иначе новый уже не начать.
  */
 function endRaidAsFailed(message) {
+  // Клетку босса чистим после обнуления: флаг считает босса, только пока
+  // он есть, иначе клетка осталась бы помеченной «в бою» навсегда.
+  const bossCell = S.boss ? S.boss.cellIdx : -1;
   S.raid = null;
   S.boss = null;
+  if (bossCell !== -1) updateBattleFlag(bossCell);
   recomputeBuffs();
   recomputeCap();
   recomputeRates();
@@ -522,15 +541,16 @@ export function processBoss(dt) {
 
   const idx = S.boss.cellIdx;
   const slots = S.cellSlots.get(idx);
-  if (!slots) { S.boss = null; return; }
-
-  // Пока монолит цел — это цель. Если он исчез во время набега (снесли враги
-  // или сам игрок), набег теряет смысл и должен закончиться.
-  const monolith = findMonolith();
-  if (!monolith && S.raid) {
-    endRaidAsFailed('💀 МОНОЛИТ РАЗРУШЕН! Набег прекращён.');
+  if (!slots) {
+    // Клетки босса больше нет — стоять ему не на чем. Молча обнулять
+    // босса нельзя: набег остался бы навсегда без цели, и новый уже не
+    // начать (startRaid выходит, если набег активен).
+    if (S.raid) { endRaidAsFailed('💀 Клетка босса потеряна — набег сорван.'); return; }
+    S.boss = null;
     return;
   }
+
+  const monolith = findMonolith();
   const targetIdx = monolith ? monolith.cellIdx : S.portalCellIdx;
 
   // Босс бьёт раз в секунду случайную цель: человека или рабочего постройки.
@@ -599,7 +619,9 @@ export function processBoss(dt) {
     // Пока есть кого бить — стоит на месте и чистит клетку.
     S.boss.moveTimer += dt;
     if (S.boss.moveTimer >= BOSS_MOVE_DELAY) {
-      S.boss.moveTimer = 0;
+      // Остаток не сбрасываем: на ×3 обнуление съедало до 0.3 с из каждых
+      // двух — босс заметно отставал от задуманной скорости.
+      S.boss.moveTimer -= BOSS_MOVE_DELAY;
       const next = findNextStepTowardTarget(idx, targetIdx);
       if (next !== -1 && next !== idx) {
         S.boss.cellIdx = next;
@@ -641,6 +663,24 @@ export function processBattles(dt) {
           if (done) { updateBattleFlag(idx); changed = true; break; }
         }
       } else if (s.t === 'bld' && s.battle) {
+        if (!s.worker) {
+          // Бой без рабочего — состояние, которого быть не должно. Раньше
+          // оно роняло отрисовку (падала полоска HP рабочего). Разбираемся
+          // так: здание оставляем на месте (оно вложено в ресурсы), гасим
+          // бой и выпускаем врага на свободный слот клетки.
+          const e = s.battle.i;
+          s.battle = null;
+          let free = -1;
+          for (let j = 0; j < slots.length; j++) {
+            if (slots[j] === null) { free = j; break; }
+          }
+          if (free !== -1) {
+            slots[free] = { t: 'i', hp: Math.max(1, e.hp), maxHp: e.maxHp, biomeIdx: e.biomeIdx };
+          }
+          updateBattleFlag(idx);
+          changed = true;
+          continue;
+        }
         s.battle.timer += dt;
         while (s.battle.timer >= COMBAT_TICK) {
           s.battle.timer -= COMBAT_TICK;
@@ -901,8 +941,12 @@ export function autoReplaceReserved() {
 // ============ ECONOMY TICK ============
 export function tick() {
   const now = performance.now();
-  const dt = Math.min((now - S.lastTick) / 1000, MAX_TICK_DT);
+  let dt = Math.min((now - S.lastTick) / 1000, MAX_TICK_DT);
   S.lastTick = now;
+  // Пауза: мир замер, но время идёт — иначе после паузы тик получил бы
+  // огромный dt и прыгнул вперёд. Скорость ×2/×3 множит шаг симуляции.
+  if (S.paused) return;
+  dt *= S.speed;
   if (S.gameWon) return;
 
   try {
@@ -919,22 +963,27 @@ export function tick() {
     }
 
     // Набег. Таймера нет: у набега ровно два исхода — убит босс (победа)
-    // или разрушен монолит (провал и возврат к подготовке). Оба
-    // разруливает processBoss, а не обратный отсчёт.
+    // или разрушен монолит (провал и возврат к подготовке).
+    //
+    // Проверка монолита живёт именно здесь, а не в processBoss: там она
+    // не сработает, пока босса ещё нет (первые RAID_BOSS_DELAY секунд) или
+    // если его клетка исчезла. Монолит могут снести и враги, и сам игрок —
+    // набег должен закончиться в любом случае.
     if (S.raid) {
       S.raid.elapsed += dt;
-      if (!S.raid.bossSpawned && S.raid.elapsed >= RAID_BOSS_DELAY) {
+      if (!findMonolith()) {
+        endRaidAsFailed('💀 МОНОЛИТ РАЗРУШЕН! Набег прекращён.');
+      } else if (!S.raid.bossSpawned && S.raid.elapsed >= RAID_BOSS_DELAY) {
         S.raid.bossSpawned = true;
         spawnRaidBoss();
       }
     }
 
-    // Spawn enemies (with raid multiplier, overridable via CE.raidMult)
-    const spawnMult = isRaidActive() ? S.raidSpawnMult : 1;
+    // Спавн врагов. Период берём из getEffectiveImpPeriod — он же считает
+    // множитель набега, что и надпись «нападение через» в попапе.
     for (const [idx] of S.claimed) {
-      let period = getImpPeriod(idx);
+      const period = getEffectiveImpPeriod(idx);
       if (period === Infinity) { S.cellImpTimers.set(idx, 0); continue; }
-      period = period / spawnMult;
       let t = (S.cellImpTimers.get(idx) || 0) + dt;
       while (t >= period) {
         const success = trySpawnEnemyOnCell(idx);

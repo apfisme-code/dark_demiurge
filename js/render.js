@@ -6,7 +6,7 @@
 import { BIOMES, BUILDING_MAP } from './config.js';
 import {
   S, ctx, popup,
-  getPoolPeople, getClaimCost, getImpPeriod,
+  getPoolPeople, getClaimCost, getEffectiveImpPeriod,
 } from './state.js';
 import { getSlotGrid, getSlotPositions } from './world.js';
 
@@ -266,7 +266,10 @@ export function draw() {
         const bsH = slotSize;
         ctx.drawImage(bs, sxx - bsW / 2, syy - bsH / 2, bsW, bsH);
 
-        if (s.battle) {
+        // Проверка s.worker в условии — не избыточность: бой без рабочего это
+        // испорченное состояние, и отрисовка его HP-полоски роняла весь
+        // кадр. Лучше показать пунктирный круг, чем чёрный экран.
+        if (s.battle && s.worker) {
           const hx = sxx - slotSize * 0.22;
           const ix = sxx + slotSize * 0.22;
           ctx.drawImage(S.humanSprite, hx - hw / 2, syy - hh * 0.35, hw * 0.85, hh * 0.85);
@@ -312,7 +315,7 @@ export function draw() {
       }
     }
 
-    const period = getImpPeriod(idx);
+    const period = getEffectiveImpPeriod(idx);
     if (period < Infinity) {
       const elapsed = S.cellImpTimers.get(idx) || 0;
       const ratio = elapsed / period;
